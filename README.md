@@ -5,6 +5,12 @@ The resulting latent performance measure provides a **stable, interpretable alte
 
 The analysis is applied to long-horizon equity portfolios benchmarked against standard risk factors, with both static and rolling-window results.
 
+## Key Findings
+- Latent performance rankings show strong cross-sectional structure across size–value portfolios
+- Rank persistence is high (Spearman ≈ 0.85 at 1-month horizon)
+- Extreme quintiles are highly stable; middle quintiles exhibit symmetric mobility
+- Results are robust to rolling-window estimation
+
 ---
 
 ## Motivation
