@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "latent-performance-benchmarking"
+version = "0.3.0"
+description = "Risk-adjusted portfolio benchmarking using stochastic frontier decomposition."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Dr. Muhammad Shoaib" }
+]
+license = { text = "MIT" }
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "scipy",
+    "seaborn",
+]
+keywords = [
+    "quantitative-finance",
+    "portfolio-benchmarking",
+    "stochastic-frontier-analysis",
+    "factor-models",
+]
+
+[project.urls]
+Repository = "https://github.com/drmshoaib/latent-performance-benchmarking"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["analysis*", "sfa*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = [".venv", "results", "latex_tables"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

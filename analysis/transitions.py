@@ -1,8 +1,70 @@
-# analysis/transitions.py
 from __future__ import annotations
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+
+def compute_transition_matrix(
+    rolling: pd.DataFrame,
+    *,
+    horizon_months: int = 12,
+    date_col: str = "window_end",
+    n_quantiles: int = 5,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute a quintile transition matrix and aggregate transition metrics."""
+
+    df = rolling.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df["period"] = df[date_col].dt.to_period("M")
+
+    if "quintile" not in df.columns:
+        if "AE" not in df.columns:
+            raise ValueError("rolling data must contain either quintile or AE.")
+        df["quintile"] = df.groupby(date_col)["AE"].transform(
+            lambda x: pd.qcut(x, n_quantiles, labels=False, duplicates="drop") + 1
+        )
+
+    df = df.dropna(subset=["quintile"])
+    df["quintile"] = df["quintile"].astype(int)
+
+    transitions: list[tuple[int, int]] = []
+    periods = sorted(df["period"].unique())
+    available = set(periods)
+    for p0 in periods:
+        p1 = p0 + int(horizon_months)
+        if p1 not in available:
+            continue
+        d0 = df[df["period"] == p0].set_index("portfolio")["quintile"]
+        d1 = df[df["period"] == p1].set_index("portfolio")["quintile"]
+        common = d0.index.intersection(d1.index)
+        transitions.extend(zip(d0.loc[common].astype(int), d1.loc[common].astype(int)))
+
+    labels = list(range(1, n_quantiles + 1))
+    counts = pd.DataFrame(0, index=labels, columns=labels, dtype=float)
+    for q0, q1 in transitions:
+        counts.loc[int(q0), int(q1)] += 1.0
+
+    matrix = counts.div(counts.sum(axis=1).replace(0.0, np.nan), axis=0).fillna(0.0)
+    matrix.index.name = "from_quintile"
+    matrix.columns.name = "to_quintile"
+
+    summary_rows = []
+    for q in labels:
+        row = matrix.loc[q]
+        summary_rows.append(
+            {
+                "from_quintile": q,
+                "stay_probability": float(row.loc[q]),
+                "upgrade_probability": float(row[row.index > q].sum()),
+                "downgrade_probability": float(row[row.index < q].sum()),
+            }
+        )
+    summary = pd.DataFrame(summary_rows)
+    summary["top_quintile_persistence"] = float(matrix.loc[n_quantiles, n_quantiles])
+    summary["bottom_quintile_persistence"] = float(matrix.loc[1, 1])
+    summary["horizon_months"] = int(horizon_months)
+    summary["n_transitions"] = int(len(transitions))
+    return matrix, summary
 
 
 def compute_quintile_transitions(
@@ -11,63 +73,18 @@ def compute_quintile_transitions(
     horizon: int = 1,
     n_quantiles: int = 5,
 ) -> pd.DataFrame:
-    """
-    Compute cross-sectional quintile transition matrix.
+    """Backward-compatible wrapper for older scripts."""
 
-    Parameters
-    ----------
-    df : DataFrame
-        Must contain columns: ['window_end', 'portfolio', value_col]
-    value_col : str
-        Latent performance metric (default: AE_H1_mean)
-    horizon : int
-        Forward horizon in windows
-    n_quantiles : int
-        Number of quantiles (default: 5)
-
-    Returns
-    -------
-    DataFrame
-        Transition probability matrix
-    """
-
-    df = df.copy()
-    df = df.sort_values(["window_end", "portfolio"])
-
-    # Assign quintiles cross-sectionally
-    def assign_quantiles(x):
-        return pd.qcut(
-            x,
-            q=n_quantiles,
-            labels=False,
-            duplicates="drop"
-        ) + 1
-
-    df["quintile"] = (
-        df.groupby("window_end")[value_col]
-        .transform(assign_quantiles)
+    work = df.rename(columns={value_col: "AE"}).copy()
+    if "window_end" not in work:
+        raise ValueError("Expected a window_end column.")
+    work["quintile"] = work.groupby("window_end")["AE"].transform(
+        lambda x: pd.qcut(x, n_quantiles, labels=False, duplicates="drop") + 1
     )
-
-    # Shift forward by horizon
-    df["quintile_fwd"] = (
-        df.groupby("portfolio")["quintile"]
-        .shift(-horizon)
+    matrix, _ = compute_transition_matrix(
+        work,
+        horizon_months=horizon,
+        date_col="window_end",
+        n_quantiles=n_quantiles,
     )
-
-    # Drop incomplete transitions
-    df = df.dropna(subset=["quintile", "quintile_fwd"])
-
-    # Count transitions
-    counts = (
-        df.groupby(["quintile", "quintile_fwd"])
-        .size()
-        .unstack(fill_value=0)
-    )
-
-    # Convert to probabilities (row-normalised)
-    probs = counts.div(counts.sum(axis=1), axis=0)
-
-    probs.index.name = "From Quintile"
-    probs.columns.name = "To Quintile"
-
-    return probs
+    return matrix

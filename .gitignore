@@ -1,16 +1,41 @@
-# Python
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.py[cod]
 
 # Virtual environments
 .venv/
 venv/
+env/
+ENV/
+
+# Test, type-checking, and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local environment files
+.env
+.env.*
 
 # OS files
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # LaTeX auxiliary files
 *.aux
@@ -18,3 +43,11 @@ Thumbs.db
 *.out
 *.toc
 *.synctex.gz
+
+# Temporary files and local scratch outputs
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo

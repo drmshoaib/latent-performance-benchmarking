@@ -1,63 +1,30 @@
-# -------------------------------
-# 1. Rank persistence plot
-# -------------------------------
+from __future__ import annotations
+
+from pathlib import Path
+
 import pandas as pd
-import matplotlib.pyplot as plt
 
-df = pd.read_csv("results/rank_persistence.csv")
+from analysis.figures import generate_all_figures
 
-summary = (
-    df.groupby("horizon")["spearman_rho"]
-      .mean()
-      .reset_index()
-)
-
-plt.figure(figsize=(6, 4))
-plt.plot(summary["horizon"], summary["spearman_rho"], marker="o")
-plt.axhline(0, color="black", linewidth=0.6)
-plt.xlabel("Horizon (months)")
-plt.ylabel("Mean Spearman Rank Correlation")
-plt.title("Rank Persistence of Latent Performance")
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig("results/fig_rank_persistence.png", dpi=300)
-plt.close()
+ROOT = Path(__file__).resolve().parents[1]
+TABLES = ROOT / "results" / "tables"
+FIGURES = ROOT / "results" / "figures"
 
 
-import seaborn as sns
-import numpy as np
+def main() -> None:
+    generate_all_figures(
+        static_scores=pd.read_csv(TABLES / "static_efficiency_scores.csv"),
+        rolling=pd.read_csv(TABLES / "rolling_efficiency_scores.csv"),
+        persistence=pd.read_csv(TABLES / "rank_persistence.csv"),
+        transition_matrix=pd.read_csv(TABLES / "transition_matrix.csv", index_col=0),
+        mobility=pd.read_csv(TABLES / "mobility_summary.csv"),
+        alpha_comparison=pd.read_csv(TABLES / "alpha_vs_ae_comparison.csv"),
+        robustness=pd.read_csv(TABLES / "robustness_summary.csv"),
+        residuals=pd.read_csv(TABLES / "static_efficiency_timeseries.csv"),
+        output_dir=FIGURES,
+    )
+    print(f"Figures written to: {FIGURES}")
 
-mat = pd.read_csv(
-    "results/quintile_transitions_h1.csv",
-    index_col=0
-)
 
-plt.figure(figsize=(6,5))
-sns.heatmap(
-    mat,
-    annot=True,
-    fmt=".2f",
-    cmap="Blues",
-    cbar_kws={"label": "Transition Probability"}
-)
-plt.xlabel("To Quintile")
-plt.ylabel("From Quintile")
-plt.title("Quintile Transition Matrix (H1)")
-plt.tight_layout()
-plt.savefig("results/fig_quintile_transitions.png", dpi=300)
-plt.close()
-
-mob = pd.read_csv("results/quintile_mobility_h1.csv")
-
-mob.set_index("Quintile")[["Stay", "Improve", "Deteriorate"]].plot(
-    kind="bar",
-    stacked=True,
-    figsize=(7,4)
-)
-
-plt.ylabel("Probability")
-plt.title("Mobility of Latent Performance Quintiles")
-plt.legend(loc="upper right")
-plt.tight_layout()
-plt.savefig("results/fig_mobility.png", dpi=300)
-plt.close()
+if __name__ == "__main__":
+    main()

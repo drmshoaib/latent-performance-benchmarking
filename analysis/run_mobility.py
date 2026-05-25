@@ -1,17 +1,9 @@
-# analysis/run_mobility.py
-from pathlib import Path
-import pandas as pd
+"""Legacy compatibility wrapper.
 
-from analysis.mobility import compute_mobility_metrics
+Use `python -m analysis.run_all` for the canonical reproducible workflow.
+"""
 
-RESULTS = Path("results")
-INFILE = RESULTS / "quintile_transitions_h1.csv"
-OUTFILE = RESULTS / "quintile_mobility_h1.csv"
+from analysis.run_all import main
 
-mat = pd.read_csv(INFILE, index_col=0)
-
-mobility = compute_mobility_metrics(mat)
-mobility.to_csv(OUTFILE, index=False)
-
-print("Mobility metrics written to:", OUTFILE.resolve())
-print(mobility.round(3))
+if __name__ == "__main__":
+    main()

@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from pathlib import Path
+
 import pandas as pd
 
-RESULTS = Path("results")
-OUT = Path("latex_tables")
-OUT.mkdir(exist_ok=True)
+ROOT = Path(__file__).resolve().parents[1]
+TABLES = ROOT / "results" / "tables"
+OUT = ROOT / "latex_tables"
 
 
 def df_to_latex(
@@ -11,11 +14,11 @@ def df_to_latex(
     filename: str,
     caption: str,
     label: str,
-    float_format="%.3f",
-):
-    """
-    Write a DataFrame to a standalone LaTeX table.
-    """
+    float_format: str = "%.3f",
+) -> Path:
+    """Write a DataFrame to a standalone LaTeX table."""
+
+    OUT.mkdir(exist_ok=True)
     tex = df.to_latex(
         index=False,
         float_format=float_format,
@@ -26,88 +29,68 @@ def df_to_latex(
     )
 
     path = OUT / filename
-    path.write_text(tex)
-    print(f"Wrote {path}")
+    path.write_text(tex, encoding="utf-8")
+    return path
 
 
-# -------------------------------------------------
-# 1) Static cross-sectional rankings
-# -------------------------------------------------
-df_rank = pd.read_csv(RESULTS / "ae_rankings.csv")
+def main() -> None:
+    """Export selected pipeline CSV outputs as LaTeX tables."""
 
-df_rank = df_rank[
-    ["portfolio", "AE_H1_mean", "rank_AE_H1"]
-].rename(
-    columns={
-        "portfolio": "Portfolio",
-        "AE_H1_mean": "Mean AE",
-        "rank_AE_H1": "Rank",
-    }
-)
+    static_rank = pd.read_csv(TABLES / "static_efficiency_scores.csv")[
+        ["portfolio", "AE", "AE_rank"]
+    ].rename(columns={"portfolio": "Portfolio", "AE": "Mean AE", "AE_rank": "Rank"})
+    persistence = pd.read_csv(TABLES / "rank_persistence.csv").rename(
+        columns={
+            "horizon_months": "Horizon",
+            "spearman_rank_autocorrelation": "Spearman $\\rho$",
+            "pearson_ae_autocorrelation": "Pearson AE",
+            "average_absolute_rank_change": "Avg. |Rank Change|",
+        }
+    )
+    transition = pd.read_csv(
+        TABLES / "transition_matrix.csv", index_col=0
+    ).reset_index()
+    mobility = pd.read_csv(TABLES / "mobility_summary.csv")[
+        [
+            "portfolio",
+            "mean_rank",
+            "rank_volatility",
+            "same_quintile_probability",
+            "move_up_probability",
+            "move_down_probability",
+        ]
+    ]
 
-df_to_latex(
-    df_rank,
-    "table_static_rankings.tex",
-    caption="Static Cross-Sectional Performance Rankings",
-    label="tab:static_rankings",
-)
+    outputs = [
+        df_to_latex(
+            static_rank,
+            "table_static_rankings.tex",
+            "Static Cross-Sectional Performance Rankings",
+            "tab:static_rankings",
+        ),
+        df_to_latex(
+            persistence,
+            "table_rank_persistence.tex",
+            "Rank Persistence Across Rolling Windows",
+            "tab:rank_persistence",
+        ),
+        df_to_latex(
+            transition,
+            "table_quintile_transitions.tex",
+            "Quintile Transition Probabilities",
+            "tab:quintile_transitions",
+        ),
+        df_to_latex(
+            mobility,
+            "table_quintile_mobility.tex",
+            "Portfolio-Level Quintile Mobility Metrics",
+            "tab:quintile_mobility",
+        ),
+    ]
 
-
-# -------------------------------------------------
-# 2) Rank persistence summary
-# -------------------------------------------------
-df_persist = pd.read_csv(RESULTS / "rank_persistence.csv")
-
-df_persist = df_persist.reset_index().rename(
-    columns={
-        "horizon": "Horizon",
-        "mean": "Mean $\\rho$",
-        "std": "Std",
-        "min": "Min",
-        "max": "Max",
-    }
-)
-
-df_to_latex(
-    df_persist,
-    "table_rank_persistence.tex",
-    caption="Rank Persistence Across Rolling Windows",
-    label="tab:rank_persistence",
-)
-
-
-# -------------------------------------------------
-# 3) Quintile transition matrix
-# -------------------------------------------------
-df_trans = pd.read_csv(RESULTS / "quintile_transitions_h1.csv", index_col=0)
-
-df_trans = df_trans.reset_index().rename(columns={"From Quintile": "From"})
-
-df_to_latex(
-    df_trans,
-    "table_quintile_transitions.tex",
-    caption="Quintile Transition Probabilities",
-    label="tab:quintile_transitions",
-)
+    for path in outputs:
+        print(f"Wrote {path}")
 
 
-# -------------------------------------------------
-# 4) Mobility metrics
-# -------------------------------------------------
-df_mob = pd.read_csv(RESULTS / "quintile_mobility_h1.csv")
-
-df_mob = df_mob.rename(
-    columns={
-        "Quintile": "Quintile",
-        "Stay": "Stay",
-        "Improve": "Improve",
-        "Deteriorate": "Deteriorate",
-    }
-)
-
-df_to_latex(
-    df_mob,
-    "table_quintile_mobility.tex",
-    caption="Quintile Mobility Metrics",
-    label="tab:quintile_mobility",
-)
+if __name__ == "__main__":
+    main()

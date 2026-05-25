@@ -3,82 +3,129 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from sfa.sfa_halfnormal import HalfNormalSFA
-from sfa.sfa_truncated import TruncatedNormalSFA
+from sfa.loaders import design_matrix
+from sfa.models import make_sfa_model, normalise_model_type
+
+
+def _assign_window_ranks(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    valid = out["AE"].notna() & out["convergence_status"].astype(bool)
+    out["rank"] = pd.NA
+    out.loc[valid, "rank"] = (
+        out.loc[valid]
+        .groupby("window_end")["AE"]
+        .rank(ascending=False, method="first")
+        .astype("Int64")
+    )
+
+    def quintiles(x: pd.Series) -> pd.Series:
+        if x.notna().sum() < 5:
+            return pd.Series(pd.NA, index=x.index, dtype="Int64")
+        return pd.qcut(x, 5, labels=False, duplicates="drop").add(1).astype("Int64")
+
+    out["quintile"] = pd.NA
+    out.loc[valid, "quintile"] = (
+        out.loc[valid].groupby("window_end")["AE"].transform(quintiles).astype("Int64")
+    )
+    return out
 
 
 def rolling_sfa(
     df: pd.DataFrame,
+    factor_cols: list[str] | None = None,
+    *,
     window: int = 120,
     min_obs: int = 120,
-    step: int = 12,   # NEW: yearly stride
+    step: int = 12,
+    model_type: str = "half_normal",
+    factor_model: str = "ff3",
+    maxiter: int = 250,
+    warm_start: bool = True,
+    first_end: int | None = None,
 ) -> pd.DataFrame:
-
     """
-    Rolling-window SFA efficiency estimation.
+    Rolling-window stochastic frontier efficiency estimation.
 
-    Parameters
-    ----------
-    df : DataFrame
-        Columns:
-        date, portfolio, excess_return, mkt_rf, smb, hml
-    window : int
-        Window length in months (default = 120)
-    min_obs : int
-        Minimum observations required per window
-
-    Returns
-    -------
-    DataFrame
-        window_end, portfolio, AE_H1_mean
+    Returns one row per portfolio-window with mean AE and mean u_hat over the
+    window, plus convergence and information-criterion diagnostics.
     """
 
-    results = []
+    factor_cols = factor_cols or ["mkt_rf", "smb", "hml"]
+    model_key = normalise_model_type(model_type)
+    feature_names = ["alpha", *factor_cols]
+    results: list[dict] = []
 
-    for portfolio, g in df.groupby("portfolio"):
-        g = g.sort_values("date").reset_index(drop=True)
-
+    for portfolio, group in df.groupby("portfolio"):
+        g = group.sort_values("date").reset_index(drop=True)
         if len(g) < min_obs:
             continue
 
-        for end in range(window, len(g) + 1, step):
-            w = g.iloc[end - window : end]
-
+        theta0 = None
+        start_end = max(window, first_end or window)
+        for end in range(start_end, len(g) + 1, step):
+            w = g.iloc[end - window : end].copy()
             if len(w) < min_obs:
                 continue
 
             y = w["excess_return"].to_numpy(float)
-            X = np.column_stack(
-                [
-                    np.ones(len(w)),
-                    w["mkt_rf"].to_numpy(float),
-                    w["smb"].to_numpy(float),
-                    w["hml"].to_numpy(float),
-                ]
-            )
-
-            # ---- Half-normal ----
+            X = design_matrix(w, factor_cols)
+            fit = None
+            message = ""
             try:
-                hn = HalfNormalSFA(y, X).fit()
-                ae_hn = hn.TE
-            except Exception:
-                ae_hn = np.full(len(w), np.nan)
+                fit = make_sfa_model(
+                    model_key,
+                    y,
+                    X,
+                    feature_names=feature_names,
+                ).fit(theta0=theta0 if warm_start else None, maxiter=maxiter)
+                if warm_start and fit.converged:
+                    theta0 = fit.theta
+                message = fit.message
+            except Exception as exc:
+                message = repr(exc)
 
-            # ---- Truncated-normal ----
-            try:
-                tn = TruncatedNormalSFA(y, X).fit()
-                ae_tn = tn.TE
-            except Exception:
-                ae_tn = np.full(len(w), np.nan)
+            base = {
+                "portfolio": portfolio,
+                "window_start": w["date"].iloc[0],
+                "window_end": w["date"].iloc[-1],
+                "window_length": int(len(w)),
+                "model_type": model_key,
+                "factor_model": factor_model,
+            }
 
-            ae_h1 = np.nanmean(np.column_stack([ae_hn, ae_tn]), axis=1)
+            if fit is None:
+                base.update(
+                    {
+                        "AE": np.nan,
+                        "u_hat": np.nan,
+                        "convergence_status": False,
+                        "message": message,
+                        "log_likelihood": np.nan,
+                        "AIC": np.nan,
+                        "BIC": np.nan,
+                        "sigma_v": np.nan,
+                        "sigma_u": np.nan,
+                        "lambda": np.nan,
+                    }
+                )
+            else:
+                base.update(
+                    {
+                        "AE": float(np.mean(fit.AE)),
+                        "u_hat": float(np.mean(fit.u_hat)),
+                        "convergence_status": bool(fit.converged),
+                        "message": message,
+                        "log_likelihood": float(fit.log_likelihood),
+                        "AIC": float(fit.aic),
+                        "BIC": float(fit.bic),
+                        "sigma_v": float(fit.sigma_v),
+                        "sigma_u": float(fit.sigma_u),
+                        "lambda": float(fit.lambda_),
+                    }
+                )
+            results.append(base)
 
-            results.append(
-                {
-                    "window_end": w["date"].iloc[-1],
-                    "portfolio": portfolio,
-                    "AE_H1_mean": float(np.nanmean(ae_h1)),
-                }
-            )
-
-    return pd.DataFrame(results)
+    out = pd.DataFrame(results)
+    if out.empty:
+        return out
+    return _assign_window_ranks(out)

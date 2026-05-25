@@ -1,228 +1,185 @@
-"""
-sfa_truncated.py — Truncated-Normal Stochastic Frontier Analysis (SFA)
----------------------------------------------------------------------
-
-Model:
-    y = Xβ + v + u
-    v ~ N(0, σ_v²)
-    u ~ N(μ, σ_u²), truncated at u ≥ 0
-
-This version is fully stabilised for weekly energy TE.
-"""
+from __future__ import annotations
 
 import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import norm
 
+from sfa.sfa_halfnormal import LOG_SIGMA_BOUNDS, MIN_SIGMA, _mills_ratio
 
-# ======================================================================
-# Truncated-Normal SFA Class
-# ======================================================================
 
 class TruncatedNormalSFA:
     """
-    Truncated-Normal Stochastic Frontier Model.
-    Numerically stable version for energy benchmarking.
+    Truncated-normal stochastic frontier model.
+
+    The composed-error convention is
+
+        y = X beta + v - u
+
+    with u drawn from N(mu, sigma_u^2) truncated below at zero. The model is
+    available for comparison, while the half-normal model remains the default
+    because it is more parsimonious and usually more stable in rolling windows.
     """
 
-    # ------------------------------------------------------------------
-    def __init__(self, y: np.ndarray, X: np.ndarray):
-        self.y = np.asarray(y, float)
-        self.X = np.asarray(X, float)
+    model_type = "truncated_normal"
+
+    def __init__(
+        self,
+        y: np.ndarray,
+        X: np.ndarray,
+        *,
+        feature_names: list[str] | None = None,
+    ):
+        self.y = np.asarray(y, dtype=float)
+        self.X = np.asarray(X, dtype=float)
+        if self.X.ndim != 2:
+            raise ValueError("X must be a two-dimensional design matrix.")
+        if self.y.ndim != 1:
+            raise ValueError("y must be a one-dimensional response vector.")
+        if len(self.y) != self.X.shape[0]:
+            raise ValueError("y and X have incompatible lengths.")
+        if not np.isfinite(self.y).all() or not np.isfinite(self.X).all():
+            raise ValueError("y and X must contain only finite values.")
+
         self.n, self.k = self.X.shape
+        if self.n <= self.k + 1:
+            raise ValueError("SFA requires more observations than parameters.")
 
-        # Regression coefficients initialised later
-        self.beta = None
-        self.mu = None
-        self.sigma_v = None
-        self.sigma_u = None
+        self.feature_names = feature_names or [f"x{i}" for i in range(self.k)]
+        self.res = None
+        self.theta = None
 
-    # ------------------------------------------------------------------
-    def _unpack(self, theta):
-        """
-        theta = [β0..β(k-1), μ, log σ_v, log σ_u]
-        """
-        beta = theta[:self.k]
-        mu = theta[self.k]
-        sigma_v = np.exp(theta[self.k + 1])
-        sigma_u = np.exp(theta[self.k + 2])
-        return beta, mu, sigma_v, sigma_u
+    def _unpack(self, theta: np.ndarray) -> tuple[np.ndarray, float, float, float]:
+        beta = np.asarray(theta[: self.k], dtype=float)
+        mu = float(theta[self.k])
+        sigma_v = float(np.exp(theta[self.k + 1]))
+        sigma_u = float(np.exp(theta[self.k + 2]))
+        return beta, mu, max(sigma_v, MIN_SIGMA), max(sigma_u, MIN_SIGMA)
 
-    # ------------------------------------------------------------------
-    # Log-likelihood
-    # ------------------------------------------------------------------
-    def _loglik(self, theta):
-        beta, mu, sv, su = self._unpack(theta)
-
+    def _loglike_obs(self, theta: np.ndarray) -> np.ndarray:
+        beta, mu, sigma_v, sigma_u = self._unpack(theta)
         eps = self.y - self.X @ beta
-        sigma = np.sqrt(sv**2 + su**2)
-        lam = su / sv
-
-        # Truncation term
-        t = mu / su
-        trunc = np.maximum(norm.cdf(t), 1e-12)
-
-        # Composed error
+        sigma = np.sqrt(sigma_v**2 + sigma_u**2)
+        lam = sigma_u / sigma_v
+        trunc = norm.logcdf(mu / sigma_u)
         z = (eps + mu) / sigma
+        arg = mu / (sigma * lam) - (lam * eps) / sigma
+        return -np.log(sigma) + norm.logpdf(z) + norm.logcdf(arg) - trunc
 
-        # Argument for log CDF term
-        arg = -(t - lam * ((eps + mu) / sigma))
-        cdf_term = np.maximum(norm.cdf(arg), 1e-12)
+    def _neg_loglik(self, theta: np.ndarray) -> float:
+        if not np.isfinite(theta).all():
+            return np.inf
+        ll = self._loglike_obs(theta)
+        if not np.isfinite(ll).all():
+            return np.inf
+        return float(-np.sum(ll))
 
-        # Full log-likelihood
-        ll = (
-            -np.log(sigma)
-            + norm.logpdf(z)
-            + np.log(cdf_term)
-            - np.log(trunc)
-        )
-
-        return -np.sum(ll)
-
-    # ------------------------------------------------------------------
-    # Gradient (numerically stabilised)
-    # ------------------------------------------------------------------
-    def _gradient(self, theta):
-        beta, mu, sv, su = self._unpack(theta)
-
-        eps = self.y - self.X @ beta
-        sigma = np.sqrt(sv**2 + su**2)
-        lam = su / sv
-
-        # Safe denominators
-        sigma2 = np.maximum(sigma**2, 1e-12)
-
-        # Truncation
-        t = mu / su
-        trunc = np.maximum(norm.cdf(t), 1e-12)
-        trunc_pdf = norm.pdf(t)
-
-        # Terms
-        z = (eps + mu) / sigma
-        pdf_z = norm.pdf(z)
-
-        arg = -(t - lam * ((eps + mu) / sigma))
-        cdf_term = np.maximum(norm.cdf(arg), 1e-12)
-        pdf_over_cdf = norm.pdf(arg) / cdf_term
-
-        # ------------------ d/d β ------------------
-        dLL_db = -(pdf_z / sigma +
-                   lam * pdf_over_cdf / sigma)[:, None] * self.X
-        g_beta = np.sum(dLL_db, axis=0)
-
-        # ------------------ d/d μ ------------------
-        dLL_dmu = (
-            -(eps + mu) * pdf_z / sigma2
-            + pdf_over_cdf * (1/su + lam*(eps + mu)/sigma2)
-            - trunc_pdf/(trunc * su)
-        )
-        g_mu = -np.sum(dLL_dmu)
-
-        # ------------------ d/d log σ_v ------------------
-        d_sigma_dsv = sv / sigma
-        d_lam_dsv = -su / (sv**2 + 1e-12)
-
-        term_sv = (
-            -(sv / sigma)
-            + pdf_z * z * d_sigma_dsv
-            + pdf_over_cdf *
-              (-(eps + mu) * d_lam_dsv / sigma +
-               lam*(eps + mu) * d_sigma_dsv / sigma2)
-        )
-        g_sv = -np.sum(term_sv) * sv
-
-        # ------------------ d/d log σ_u ------------------
-        d_sigma_dsu = su / sigma
-        d_lam_dsu = 1 / (sv + 1e-12)
-
-        term_su = (
-            -(su / sigma)
-            + pdf_z * z * d_sigma_dsu
-            + pdf_over_cdf *
-              (-(eps + mu) * d_lam_dsu / sigma +
-               lam*(eps + mu) * d_sigma_dsu / sigma2)
-            - (t * trunc_pdf / trunc)
-        )
-        g_su = -np.sum(term_su) * su
-
-        return np.concatenate([g_beta, [g_mu, g_sv, g_su]])
-
-    # ------------------------------------------------------------------
-    # Fit model
-    # ------------------------------------------------------------------
-    def fit(self):
-        # OLS start
+    def _ols_start(self) -> np.ndarray:
         beta_ols = np.linalg.lstsq(self.X, self.y, rcond=None)[0]
         resid = self.y - self.X @ beta_ols
-        sigma_ols = float(np.std(resid) + 1e-6)
-
-        theta0 = np.concatenate([
-            beta_ols,
-            [0.0],                        # μ init
-            [np.log(sigma_ols * 0.5)],    # σ_v init
-            [np.log(sigma_ols * 0.7)]     # σ_u init
-        ])
-
-        # Optimisation
-        res = minimize(
-            self._loglik, theta0,
-            jac=self._gradient,
-            method="L-BFGS-B",
-            options={"maxiter": 500, "disp": False}
+        sigma = float(np.std(resid, ddof=max(1, self.k)) + 1e-6)
+        return np.concatenate(
+            [beta_ols, [0.0, np.log(sigma * 0.8), np.log(sigma * 0.5)]]
         )
 
-        # Fallback without gradient
-        if not res.success:
-            res = minimize(
-                self._loglik, theta0,
-                method="L-BFGS-B",
-                options={"maxiter": 500, "disp": False}
-            )
+    def _bounds(self) -> list[tuple[float | None, float | None]]:
+        beta_bounds = [(None, None)] * self.k
+        return beta_bounds + [(None, None), LOG_SIGMA_BOUNDS, LOG_SIGMA_BOUNDS]
 
-        self.res = res
-        self.theta = res.x
+    def fit(
+        self,
+        *,
+        theta0: np.ndarray | None = None,
+        maxiter: int = 500,
+        raise_on_failure: bool = False,
+    ) -> TruncatedNormalSFA:
+        starts = []
+        used_warm_start = False
+        if theta0 is not None and len(theta0) == self.k + 3:
+            starts.append(np.asarray(theta0, dtype=float))
+            used_warm_start = True
+
+        base = self._ols_start()
+        if not used_warm_start:
+            starts.extend([base, np.r_[base[: self.k], 0.01, base[self.k + 1 :]]])
+
+        best = None
+        for start in starts:
+            res = minimize(
+                self._neg_loglik,
+                start,
+                method="L-BFGS-B",
+                bounds=self._bounds(),
+                options={"maxiter": maxiter, "ftol": 1e-9},
+            )
+            if best is None or res.fun < best.fun:
+                best = res
+
+        if used_warm_start and best is not None and not best.success:
+            res = minimize(
+                self._neg_loglik,
+                base,
+                method="L-BFGS-B",
+                bounds=self._bounds(),
+                options={"maxiter": maxiter, "ftol": 1e-9},
+            )
+            if res.fun < best.fun:
+                best = res
+
+        self.res = best
+        self.theta = np.asarray(best.x, dtype=float)
         self._postprocess()
+
+        if raise_on_failure and not self.converged:
+            raise RuntimeError(f"TruncatedNormalSFA did not converge: {self.message}")
+
         return self
 
-    # ------------------------------------------------------------------
-    # Post-processing: JLMS inefficiency estimator
-    # ------------------------------------------------------------------
-    def _postprocess(self):
-        beta, mu, sv, su = self._unpack(self.theta)
-
+    def _postprocess(self) -> None:
+        beta, mu, sigma_v, sigma_u = self._unpack(self.theta)
         self.beta = beta
+        self.alpha = float(beta[0])
         self.mu = mu
-        self.sigma_v = sv
-        self.sigma_u = su
+        self.sigma_v = sigma_v
+        self.sigma_u = sigma_u
+        self.lambda_ = sigma_u / sigma_v
+        self.log_likelihood = float(-self.res.fun)
+        self.n_params = self.k + 3
+        self.aic = float(2 * self.n_params - 2 * self.log_likelihood)
+        self.bic = float(np.log(self.n) * self.n_params - 2 * self.log_likelihood)
+        self.converged = bool(self.res.success)
+        self.message = str(self.res.message)
+        self.n_iter = int(getattr(self.res, "nit", 0))
 
-        eps = self.y - self.X @ beta
-        sigma2 = sv**2 + su**2
-
-        # JLMS estimator for truncated-normal u
-        mu_star = su**2 * (eps + mu) / sigma2
-        sigma_star = (sv * su) / np.sqrt(sigma2)
-
-        z = mu_star / np.maximum(sigma_star, 1e-12)
-        ratio = norm.pdf(z) / np.maximum(norm.cdf(z), 1e-12)
-
-        u_hat = mu_star + sigma_star * ratio
-        self.u_hat = np.maximum(u_hat, 0.0)
-
-        # TE
-        self.TE = np.exp(-self.u_hat)
-
-        # Frontier
         self.frontier = self.X @ beta
+        self.composed_error = self.y - self.frontier
+        sigma2 = sigma_v**2 + sigma_u**2
+        mu_star = (mu * sigma_v**2 - self.composed_error * sigma_u**2) / sigma2
+        sigma_star = (sigma_v * sigma_u) / np.sqrt(sigma2)
+        z = mu_star / max(sigma_star, MIN_SIGMA)
+        self.u_hat = np.maximum(mu_star + sigma_star * _mills_ratio(z), 0.0)
+        self.AE = np.clip(np.exp(-self.u_hat), np.finfo(float).tiny, 1.0)
+        self.TE = self.AE
+        self.fitted_values = self.frontier - self.u_hat
+        self.residuals = self.y - self.fitted_values
 
-    # ------------------------------------------------------------------
-    def summary(self):
+    def summary(self) -> dict:
         return {
+            "model_type": self.model_type,
             "beta": self.beta,
+            "alpha": self.alpha,
             "mu": self.mu,
             "sigma_v": self.sigma_v,
             "sigma_u": self.sigma_u,
-            "TE_mean": float(np.mean(self.TE)),
-            "TE_median": float(np.median(self.TE)),
-            "log_likelihood": -self.res.fun,
-            "converged": self.res.success
+            "lambda": self.lambda_,
+            "AE_mean": float(np.mean(self.AE)),
+            "AE_median": float(np.median(self.AE)),
+            "TE_mean": float(np.mean(self.AE)),
+            "TE_median": float(np.median(self.AE)),
+            "u_hat_mean": float(np.mean(self.u_hat)),
+            "log_likelihood": self.log_likelihood,
+            "AIC": self.aic,
+            "BIC": self.bic,
+            "converged": self.converged,
+            "message": self.message,
+            "n_iter": self.n_iter,
         }

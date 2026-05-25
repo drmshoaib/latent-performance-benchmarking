@@ -1,205 +1,259 @@
-# =====================================================================
-# sfa_halfnormal.py — Half-Normal Stochastic Frontier Analysis (SFA)
-# =====================================================================
-#
-# Model:
-#     y = Xβ + v + u
-#
-# Where:
-#     v ~ N(0, σ_v²)
-#     u ~ |N(0, σ_u²)|   (half-normal inefficiency)
-#
-# Features:
-#   ✓ Analytical log-likelihood
-#   ✓ Analytical gradient
-#   ✓ Stable L-BFGS-B optimisation
-#   ✓ JLMS inefficiency estimator
-#   ✓ Identical interface to TruncatedNormalSFA
-#
-# =====================================================================
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import norm
 
+LOG_SIGMA_BOUNDS = (-20.0, 2.0)
+MIN_SIGMA = 1e-10
+
+
+@dataclass
+class SFAResult:
+    beta: np.ndarray
+    sigma_v: float
+    sigma_u: float
+    log_likelihood: float
+    aic: float
+    bic: float
+    converged: bool
+    message: str
+    n_iter: int
+
+
+def _mills_ratio(z: np.ndarray) -> np.ndarray:
+    """Compute phi(z) / Phi(z) with log-scale protection."""
+
+    log_ratio = norm.logpdf(z) - norm.logcdf(z)
+    return np.exp(np.clip(log_ratio, -745.0, 50.0))
+
 
 class HalfNormalSFA:
-    """Half-Normal Cost Frontier Model"""
+    """
+    Half-normal stochastic frontier model for a production-style frontier.
 
-    # ------------------------------------------------------------------
-    def __init__(self, y: np.ndarray, X: np.ndarray):
-        self.y = np.asarray(y, float)
-        self.X = np.asarray(X, float)
+    The composed-error convention is
+
+        y = X beta + v - u
+
+    where v is symmetric Gaussian noise and u is non-negative latent
+    performance shortfall. The class keeps the historical TE attribute for
+    compatibility, but the project reports it as adjusted efficiency (AE).
+    """
+
+    model_type = "half_normal"
+
+    def __init__(
+        self,
+        y: np.ndarray,
+        X: np.ndarray,
+        *,
+        feature_names: list[str] | None = None,
+    ):
+        self.y = np.asarray(y, dtype=float)
+        self.X = np.asarray(X, dtype=float)
+        if self.X.ndim != 2:
+            raise ValueError("X must be a two-dimensional design matrix.")
+        if self.y.ndim != 1:
+            raise ValueError("y must be a one-dimensional response vector.")
+        if len(self.y) != self.X.shape[0]:
+            raise ValueError("y and X have incompatible lengths.")
+        if not np.isfinite(self.y).all() or not np.isfinite(self.X).all():
+            raise ValueError("y and X must contain only finite values.")
+
         self.n, self.k = self.X.shape
+        if self.n <= self.k:
+            raise ValueError("SFA requires more observations than parameters.")
 
-    # ------------------------------------------------------------------
-    def _unpack(self, theta):
-        """
-        theta = [β0 ... β(k−1), log σ_v, log σ_u]
-        """
-        beta = theta[:self.k]
-        sigma_v = np.exp(theta[self.k])
-        sigma_u = np.exp(theta[self.k + 1])
-        return beta, sigma_v, sigma_u
+        self.feature_names = feature_names or [f"x{i}" for i in range(self.k)]
+        self.res = None
+        self.theta = None
 
-    # ------------------------------------------------------------------
-    def _loglik(self, theta):
+    def _unpack(self, theta: np.ndarray) -> tuple[np.ndarray, float, float]:
+        beta = np.asarray(theta[: self.k], dtype=float)
+        sigma_v = float(np.exp(theta[self.k]))
+        sigma_u = float(np.exp(theta[self.k + 1]))
+        return beta, max(sigma_v, MIN_SIGMA), max(sigma_u, MIN_SIGMA)
+
+    def _loglike_obs(self, theta: np.ndarray) -> np.ndarray:
         beta, sigma_v, sigma_u = self._unpack(theta)
-
         eps = self.y - self.X @ beta
         sigma = np.sqrt(sigma_v**2 + sigma_u**2)
-
-        # λ = σ_u / σ_v
-        lam = sigma_u / max(sigma_v, 1e-12)
-
-        # composed error
+        lam = sigma_u / sigma_v
         z = eps / sigma
-
-        # log-likelihood
-        ll = (
-            -np.log(sigma)
-            + norm.logpdf(z)
-            + np.log(2.0)
-            + norm.logcdf(-(lam * eps) / sigma)
-        )
-
-        return -np.sum(ll)
-
-    # ------------------------------------------------------------------
-    def _gradient(self, theta):
-        """
-        Analytical gradient for L-BFGS-B optimisation.
-        """
-        beta, sv, su = self._unpack(theta)
-
-        eps = self.y - self.X @ beta
-        sigma = np.sqrt(sv**2 + su**2)
-        lam = su / max(sv, 1e-12)
-
-        z = eps / sigma
-        pdf_z = norm.pdf(z)
-
         arg = -(lam * eps) / sigma
-        cdf_term = norm.cdf(arg)
-        cdf_term = np.maximum(cdf_term, 1e-12)
-        pdf_over_cdf = norm.pdf(arg) / cdf_term
+        return np.log(2.0) - np.log(sigma) + norm.logpdf(z) + norm.logcdf(arg)
 
-        # ---------------------- ∂LL / ∂β ----------------------
-        dLL_db = ((pdf_z / sigma) +
-                  lam * pdf_over_cdf / sigma)[:, None] * self.X
-        g_beta = -np.sum(dLL_db, axis=0)
+    def _neg_loglik(self, theta: np.ndarray) -> float:
+        if not np.isfinite(theta).all():
+            return np.inf
+        ll = self._loglike_obs(theta)
+        if not np.isfinite(ll).all():
+            return np.inf
+        return float(-np.sum(ll))
 
-        # ---------------------- ∂LL / ∂log σ_v ----------------------
-        d_sigma_dsv = sv / sigma
-        d_lam_dsv = -su / (max(sv, 1e-12)**2)
+    def _neg_loglik_grad(self, theta: np.ndarray) -> np.ndarray:
+        beta, sigma_v, sigma_u = self._unpack(theta)
+        eps = self.y - self.X @ beta
+        sigma = np.sqrt(sigma_v**2 + sigma_u**2)
+        lam = sigma_u / sigma_v
+        arg = -(lam * eps) / sigma
+        ratio = _mills_ratio(arg)
 
-        g_sv = -np.sum(
-            -(sv / sigma)
-            + pdf_z * z * d_sigma_dsv
-            + pdf_over_cdf *
-              (-(eps * d_lam_dsv) / sigma +
-               lam * eps * d_sigma_dsv / sigma**2)
-        ) * sv
+        d_ll_d_eps = -eps / sigma**2 - (lam / sigma) * ratio
+        grad_beta = -np.sum(d_ll_d_eps[:, None] * (-self.X), axis=0)
 
-        # ---------------------- ∂LL / ∂log σ_u ----------------------
-        d_sigma_dsu = su / sigma
-        d_lam_dsu = 1.0 / max(sv, 1e-12)
+        d_sigma_d_sv = sigma_v / sigma
+        d_sigma_d_su = sigma_u / sigma
+        d_lam_d_sv = -sigma_u / sigma_v**2
+        d_lam_d_su = 1.0 / sigma_v
 
-        g_su = -np.sum(
-            -(su / sigma)
-            + pdf_z * z * d_sigma_dsu
-            + pdf_over_cdf *
-              (-(eps * d_lam_dsu) / sigma +
-               lam * eps * d_sigma_dsu / sigma**2)
-        ) * su
+        common_sigma = -1.0 / sigma + eps**2 / sigma**3
+        d_arg_d_sv = -eps * (d_lam_d_sv / sigma - lam * d_sigma_d_sv / sigma**2)
+        d_arg_d_su = -eps * (d_lam_d_su / sigma - lam * d_sigma_d_su / sigma**2)
 
-        return np.concatenate([g_beta, [g_sv, g_su]])
+        d_ll_d_sv = common_sigma * d_sigma_d_sv + ratio * d_arg_d_sv
+        d_ll_d_su = common_sigma * d_sigma_d_su + ratio * d_arg_d_su
 
-    # ------------------------------------------------------------------
-    def fit(self):
-        """
-        Fit model via L-BFGS-B using analytical gradient.
-        """
+        grad_log_sv = -np.sum(d_ll_d_sv) * sigma_v
+        grad_log_su = -np.sum(d_ll_d_su) * sigma_u
+        return np.concatenate([grad_beta, [grad_log_sv, grad_log_su]])
 
-        # OLS starting values
+    def _ols_start(self) -> np.ndarray:
         beta_ols = np.linalg.lstsq(self.X, self.y, rcond=None)[0]
         resid = self.y - self.X @ beta_ols
-        sigma_ols = float(np.std(resid) + 1e-6)
+        sigma = float(np.std(resid, ddof=max(1, self.k)) + 1e-6)
+        return np.concatenate([beta_ols, [np.log(sigma * 0.8), np.log(sigma * 0.5)]])
 
-        theta0 = np.concatenate([
-            beta_ols,
-            [np.log(sigma_ols * 0.5)],
-            [np.log(sigma_ols * 0.7)]
-        ])
+    def _bounds(self) -> list[tuple[float | None, float | None]]:
+        beta_bounds = [(None, None)] * self.k
+        return beta_bounds + [LOG_SIGMA_BOUNDS, LOG_SIGMA_BOUNDS]
 
-        # try gradient first
-        res = minimize(
-            self._loglik, theta0,
-            jac=self._gradient,
-            method="L-BFGS-B",
-            options={"maxiter": 400, "disp": False}
-        )
+    def fit(
+        self,
+        *,
+        theta0: np.ndarray | None = None,
+        maxiter: int = 500,
+        raise_on_failure: bool = False,
+    ) -> HalfNormalSFA:
+        starts = []
+        used_warm_start = False
+        if theta0 is not None and len(theta0) == self.k + 2:
+            starts.append(np.asarray(theta0, dtype=float))
+            used_warm_start = True
 
-        # fallback without gradient
-        if not res.success:
-            res = minimize(
-                self._loglik, theta0,
-                method="L-BFGS-B",
-                options={"maxiter": 600, "disp": False}
+        base = self._ols_start()
+        if not used_warm_start:
+            starts.extend(
+                [
+                    base,
+                    np.r_[
+                        base[: self.k],
+                        np.log(np.exp(base[self.k]) * 0.75),
+                        np.log(np.exp(base[self.k]) * 1.50),
+                    ],
+                    np.r_[
+                        base[: self.k],
+                        np.log(np.exp(base[self.k]) * 1.50),
+                        np.log(np.exp(base[self.k]) * 0.75),
+                    ],
+                ]
             )
 
-        self.res = res
-        self.theta = res.x
-        self._postprocess()
-        return self
-    # ------------------------------------------------------------------
-    # Post-processing after optimisation
-    # ------------------------------------------------------------------
-    def _postprocess(self):
-        """
-        Compute:
-          • u_hat  (JLMS inefficiency estimator)
-          • TE     (technical efficiency)
-          • frontier (X @ beta)
-        """
+        best = None
+        for start in starts:
+            res = minimize(
+                self._neg_loglik,
+                start,
+                jac=self._neg_loglik_grad,
+                method="L-BFGS-B",
+                bounds=self._bounds(),
+                options={"maxiter": maxiter, "ftol": 1e-9},
+            )
+            if best is None or res.fun < best.fun:
+                best = res
 
+        if used_warm_start and best is not None and not best.success:
+            res = minimize(
+                self._neg_loglik,
+                base,
+                jac=self._neg_loglik_grad,
+                method="L-BFGS-B",
+                bounds=self._bounds(),
+                options={"maxiter": maxiter, "ftol": 1e-9},
+            )
+            if res.fun < best.fun:
+                best = res
+
+        self.res = best
+        self.theta = np.asarray(best.x, dtype=float)
+        self._postprocess()
+
+        if raise_on_failure and not self.converged:
+            raise RuntimeError(f"HalfNormalSFA did not converge: {self.message}")
+
+        return self
+
+    def _postprocess(self) -> None:
         beta, sigma_v, sigma_u = self._unpack(self.theta)
         self.beta = beta
+        self.alpha = float(beta[0])
         self.sigma_v = sigma_v
         self.sigma_u = sigma_u
+        self.lambda_ = sigma_u / sigma_v
+        self.log_likelihood = float(-self.res.fun)
+        self.n_params = self.k + 2
+        self.aic = float(2 * self.n_params - 2 * self.log_likelihood)
+        self.bic = float(np.log(self.n) * self.n_params - 2 * self.log_likelihood)
+        self.converged = bool(self.res.success)
+        self.message = str(self.res.message)
+        self.n_iter = int(getattr(self.res, "nit", 0))
 
-        eps = self.y - self.X @ beta
-        sigma2 = sigma_v**2 + sigma_u**2
-
-        # JLMS estimator (Jondrow et al., 1982)
-        # For half-normal distribution
-        mu_star = (sigma_u**2 * eps) / sigma2
-        sigma_star = (sigma_v * sigma_u) / np.sqrt(sigma2)
-
-        z = mu_star / sigma_star
-        correction = norm.pdf(z) / np.maximum(norm.cdf(z), 1e-12)
-
-        u_hat = mu_star + sigma_star * correction
-
-        # Truncate negative values
-        self.u_hat = np.maximum(u_hat, 0.0)
-
-        # Technical efficiency: TE = exp(−û)
-        self.TE = np.exp(-self.u_hat)
-
-        # Frontier: predicted optimal consumption
         self.frontier = self.X @ beta
+        self.composed_error = self.y - self.frontier
 
-    # ------------------------------------------------------------------
-    # Summary dictionary
-    # ------------------------------------------------------------------
-    def summary(self):
+        sigma2 = sigma_v**2 + sigma_u**2
+        mu_star = -(sigma_u**2 * self.composed_error) / sigma2
+        sigma_star = (sigma_v * sigma_u) / np.sqrt(sigma2)
+        z = mu_star / max(sigma_star, MIN_SIGMA)
+        self.u_hat = np.maximum(mu_star + sigma_star * _mills_ratio(z), 0.0)
+        self.AE = np.clip(np.exp(-self.u_hat), np.finfo(float).tiny, 1.0)
+        self.TE = self.AE
+        self.fitted_values = self.frontier - self.u_hat
+        self.residuals = self.y - self.fitted_values
+
+    def result(self) -> SFAResult:
+        return SFAResult(
+            beta=self.beta,
+            sigma_v=self.sigma_v,
+            sigma_u=self.sigma_u,
+            log_likelihood=self.log_likelihood,
+            aic=self.aic,
+            bic=self.bic,
+            converged=self.converged,
+            message=self.message,
+            n_iter=self.n_iter,
+        )
+
+    def summary(self) -> dict:
         return {
+            "model_type": self.model_type,
             "beta": self.beta,
+            "alpha": self.alpha,
             "sigma_v": self.sigma_v,
             "sigma_u": self.sigma_u,
-            "TE_mean": float(np.mean(self.TE)),
-            "TE_median": float(np.median(self.TE)),
-            "log_likelihood": -self.res.fun,
-            "converged": self.res.success
+            "lambda": self.lambda_,
+            "AE_mean": float(np.mean(self.AE)),
+            "AE_median": float(np.median(self.AE)),
+            "TE_mean": float(np.mean(self.AE)),
+            "TE_median": float(np.median(self.AE)),
+            "u_hat_mean": float(np.mean(self.u_hat)),
+            "log_likelihood": self.log_likelihood,
+            "AIC": self.aic,
+            "BIC": self.bic,
+            "converged": self.converged,
+            "message": self.message,
+            "n_iter": self.n_iter,
         }
