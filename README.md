@@ -1,6 +1,11 @@
 # Latent Performance Benchmarking
 ## Risk-adjusted portfolio benchmarking using stochastic frontier decomposition
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests: 13 passed](https://img.shields.io/badge/tests-13%20passed-brightgreen.svg)](tests/)
+[![scipy](https://img.shields.io/badge/scipy-minimize-orange.svg)](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize.html)
+
 Latent Performance Benchmarking is a quantitative research project for evaluating portfolios with stochastic frontier decomposition. It applies Fama-French-style portfolio and factor data to separate realised risk-adjusted performance into symmetric noise and one-sided latent performance shortfall.
 
 Traditional alpha estimates are useful, but they can be noisy, unstable across rolling windows, and sensitive to factor exposure misspecification. This project adds a model-based adjusted-efficiency diagnostic, then compares that diagnostic against a conventional factor-alpha baseline.
@@ -44,25 +49,15 @@ The data layer explicitly selects the first monthly portfolio-return panel from 
 ## Workflow
 
 ```mermaid
-flowchart LR
+flowchart TD
     A["Raw Fama-French data"] --> B["Monthly panel extraction"]
     B --> C["Data cleaning / alignment"]
     C --> D["Factor model construction"]
-    D --> E["Static SFA estimation"]
-    D --> F["Alpha baseline"]
-    D --> G["Rolling-window SFA"]
-    E --> H["AE ranking"]
-    F --> I["Alpha vs AE comparison"]
-    G --> J["Persistence"]
-    G --> K["Transition matrix"]
-    G --> L["Mobility diagnostics"]
-    G --> M["Window sensitivity"]
-    H --> N["Tables / figures / diagnostics"]
-    I --> N
-    J --> N
-    K --> N
-    L --> N
-    M --> N
+    D --> E["Static SFA estimation and AE ranking"]
+    E --> F["Alpha baseline and alpha vs AE comparison"]
+    F --> G["Rolling-window SFA"]
+    G --> H["Persistence, transitions, mobility, and window sensitivity"]
+    H --> I["Tables / figures / diagnostics"]
 ```
 
 ## Quick Start
