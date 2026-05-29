@@ -7,7 +7,7 @@
 [![Tests: 13 passed](https://img.shields.io/badge/tests-13%20passed-brightgreen.svg)](tests/)
 [![scipy](https://img.shields.io/badge/scipy-minimize-orange.svg)](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize.html)
 
-This repository explores how observed portfolio performance can be decomposed into factor exposure, symmetric noise, and one-sided latent performance shortfall. It is designed as a reproducible portfolio analytics workflow for studying ranking stability, persistence, mobility, and model-based performance diagnostics - not as a trading signal or investment recommendation engine.
+This repository explores how observed portfolio performance can be decomposed into factor exposure, symmetric noise, and one-sided latent performance shortfall. It is designed as a reproducible portfolio analytics workflow for studying ranking stability, persistence, mobility, and model-based performance diagnostics — not as a trading signal or investment recommendation engine.
 
 <p align="center">
   <img src="docs/assets/latent_performance_overview.png" alt="Latent performance benchmarking diagnostic overview" width="900">
@@ -219,21 +219,22 @@ Rolling-window sensitivity across 60-, 120-, and 180-month windows. This checks 
 
 Static SFA residual distribution. This is a quick diagnostic for model fit and residual non-normality, not a formal validation by itself.
 
-## Output Reading Guide
+## Table Reading Guide
 
 | If you want to inspect... | Start with | What it tells you |
 |---|---|---|
-| Static frontier rankings | `results/tables/static_efficiency_scores.csv` | AE, latent shortfall, alpha, factor coefficients, convergence, and rank by portfolio |
-| Observation-level diagnostics | `results/tables/static_efficiency_timeseries.csv` | Fitted values, residuals, composed errors, `u_hat`, and AE by portfolio-date |
-| Traditional factor benchmark | `results/tables/alpha_baseline.csv` | OLS alpha, t-statistics, beta exposures, residual volatility, R-squared, and risk-adjusted return summaries |
-| Alpha versus AE disagreement | `results/tables/alpha_vs_ae_comparison.csv` | Rank differences between conventional alpha and SFA adjusted efficiency |
-| Rolling SFA estimates | `results/tables/rolling_efficiency_scores.csv` | Rolling AE, `u_hat`, rank, quintile, convergence, log-likelihood, AIC, and BIC |
-| Rank and score persistence | `results/tables/rank_persistence.csv` | Rank autocorrelation, AE autocorrelation, rank changes, and top/bottom quintile persistence |
-| Quintile movement | `results/tables/transition_matrix.csv` | Transition probabilities across latent-efficiency quintiles |
-| Mobility summary | `results/tables/mobility_summary.csv` | Rank volatility, AE volatility, move-up/down probabilities, and time spent in each quintile |
-| Window robustness | `results/tables/robustness_summary.csv` | Sensitivity of ranks and AE values to rolling-window length |
-| SFA model comparison | `results/tables/model_comparison.csv` | Half-normal versus truncated-normal AE, rank, likelihood, AIC, BIC, and convergence |
-| Residual diagnostics | `results/tables/model_diagnostics.csv` | Likelihood metrics, residual moments, convergence, and normality diagnostics |
+| Static frontier rankings | `results/tables/static_efficiency_scores.csv` | AE, `u_hat`, alpha, factor coefficients, likelihood metrics, convergence, and rank by portfolio |
+| Observation-level fitted diagnostics | `results/tables/static_efficiency_timeseries.csv` | Fitted frontier values, residuals, composed errors, `u_hat`, and AE by portfolio-date |
+| Traditional factor-model benchmark | `results/tables/alpha_baseline.csv` | OLS alpha, alpha t-stat, beta exposures, residual volatility, R-squared, mean excess return, volatility, and Sharpe-like ratio |
+| Disagreement between alpha and SFA AE | `results/tables/alpha_vs_ae_comparison.csv` | Alpha rank, AE rank, rank differences, disagreement flags, and Spearman rank correlation |
+| Rolling SFA estimates | `results/tables/rolling_efficiency_scores.csv` | Rolling AE, `u_hat`, rank, quintile, convergence status, log-likelihood, AIC, and BIC |
+| Rank and score persistence | `results/tables/rank_persistence.csv` | Spearman rank autocorrelation, Pearson AE autocorrelation, rank-change magnitude, and top/bottom quintile stay probabilities |
+| Quintile movement | `results/tables/transition_matrix.csv` | Full 5x5 transition probabilities across latent-efficiency quintiles |
+| Transition summaries | `results/tables/transition_summary.csv` | Stay, upgrade, downgrade, top-persistence, bottom-persistence, and number of transitions |
+| Portfolio-level mobility | `results/tables/mobility_summary.csv` | Mean rank, rank volatility, AE volatility, move-up/down probabilities, and time spent in each quintile |
+| Window-length robustness | `results/tables/robustness_summary.csv` | Rank and AE correlations across rolling-window lengths plus top/bottom quintile overlap |
+| Distributional SFA sensitivity | `results/tables/model_comparison.csv` | Half-normal versus truncated-normal AE, rank, likelihood, AIC, BIC, and convergence comparison |
+| Fit and residual diagnostics | `results/tables/model_diagnostics.csv` | Log-likelihood, AIC/BIC, `sigma_v`, `sigma_u`, lambda, convergence, residual moments, and Jarque-Bera p-values |
 
 For a first review, open the README figures, then inspect `alpha_vs_ae_comparison.csv`, `rolling_efficiency_scores.csv`, `transition_matrix.csv`, and `model_diagnostics.csv`. Together they show the main research story: the comparison against conventional alpha, rolling behaviour, transition structure, and model-fit diagnostics.
 
@@ -261,7 +262,7 @@ Robustness outputs compare rolling-window lengths and static SFA distributional 
 
 ## Portfolio Signal
 
-This project demonstrates:
+This repository demonstrates:
 
 - quantitative portfolio analytics;
 - risk-adjusted performance measurement;
